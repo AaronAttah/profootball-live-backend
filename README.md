@@ -65,6 +65,22 @@ ProFootball Live provides a robust API for football enthusiasts to track live ma
 - `GET /api/v1/matches/:id/messages`: this endpoint fetches all messages.
 - `GET /api/v1/matches/socket/info`: this endpoint fetches all socket info which helps in propmting/sending requests to the socket server.
 
+## Socket.io Real-Time Connection Guide
+
+### Connection Setup
+
+**WebSocket URL**: 
+- Local: `ws://localhost:3000`
+- Production: `wss://your-app.onrender.com`
+
+**Authentication**: The SocketService middleware accepts JWT tokens in multiple formats:
+- `socket.handshake.auth.token` (✅ Recommended)
+- `Authorization: Bearer <token>` header
+- Custom `token` header
+- Custom `bearer` header
+
+---
+
 ### WebSocket Events
 - `join_match`: Join a match-specific room (`matchId`).
 - `leave_match`: Leave a match room.
@@ -72,21 +88,205 @@ ProFootball Live provides a robust API for football enthusiasts to track live ma
 - `typing_start`/`typing_stop`: Chat interaction indicators.
 - e.t.c
 
-### WebSocket Authentication
-The  SocketService middleware is made  flexible. It now checks for the token in all of these locations, so anywhere its passed will work:
 
-- Handshake Auth: socket.handshake.auth.token (Recommended)
-- Authorization Header: Authorization: Bearer <token>
-- Direct Token Header: token: <token>
-- Direct Bearer Header: bearer: <token> 
+### JavaScript/TypeScript Example
+
+```javascript
+import { io } from 'socket.io-client';
+
+// Connect with authentication
+const socket = io('ws://localhost:3000', {
+  auth: {
+    token: 'YOUR_JWT_TOKEN_HERE'
+  }
+});
+
+// Connection events
+socket.on('connect', () => {
+  console.log('✅ Connected to ProFootball Live!');
+  
+  // Join a match room to receive updates
+  socket.emit('join_match', { matchId: 'match-uuid-here' });
+});
+
+socket.on('connect_error', (error) => {
+  console.error('❌ Connection failed:', error.message);
+});
+
+// Listen for live match updates
+socket.on('match_status_update', (data) => {
+  console.log('⚽ Score update:', data.homeTeam, data.homeScore, '-', data.awayScore, data.awayTeam);
+});
+
+socket.on('new_match_event', (event) => {
+  console.log('🎯 Match event:', event.type, event.team, event.playerMain);
+});
+
+socket.on('match_stats_update', (stats) => {
+  console.log('📊 Stats:', stats.homePossession + '% possession');
+});
+
+// Chat functionality
+socket.on('new_message', (message) => {
+  console.log(`💬 ${message.senderName}: ${message.content}`);
+});
+
+socket.on('user_count_update', (data) => {
+  console.log(`👥 ${data.count} fans watching this match`);
+});
+
+socket.on('user_typing', (data) => {
+  if (data.isTyping) {
+    console.log(`✍️ User ${data.userId} is typing...`);
+  }
+});
+
+// Send a chat message
+function sendMessage(matchId, content) {
+  socket.emit('send_message', {
+    matchId: matchId,
+    content: content
+  });
+}
+
+// Typing indicators
+function startTyping(matchId) {
+  socket.emit('typing_start', { matchId });
+}
+
+function stopTyping(matchId) {
+  socket.emit('typing_stop', { matchId });
+}
+
+// Leave a match room
+function leaveMatch(matchId) {
+  socket.emit('leave_match', { matchId });
+}
+```
+
+---
 
 
-#### postman DOCUMENTATION for both HTTP and SOCKET.IO(rooms and chats)
- https://documenter.getpostman.com/view/16602053/2sBXVk9obV 
+### Event Reference
+
+#### 📤 Client → Server (Emit)
+
+| Event | Payload | Description | Rate Limit |
+|-------|---------|-------------|------------|
+| `join_match` | `{ matchId: string }` | Subscribe to match room for live updates and chat | None |
+| `leave_match` | `{ matchId: string }` | Unsubscribe from match room | None |
+| `send_message` | `{ matchId: string, content: string }` | Send a chat message (max 500 chars) | 1 msg/sec |
+| `typing_start` | `{ matchId: string }` | Show typing indicator to other users | None |
+| `typing_stop` | `{ matchId: string }` | Hide typing indicator | None |
+
+#### 📥 Server → Client (Listen)
+
+| Event | Payload Example | When Triggered |
+|-------|----------------|----------------|
+| `match_status_update` | `{ id, homeTeam, awayTeam, homeScore, awayScore, minute, status }` | Score changes, time updates, status changes |
+| `new_match_event` | `{ type: 'GOAL', team: 'Arsenal', playerMain: 'Saka', minute: 23 }` | Goals, cards, substitutions, fouls, shots |
+| `match_stats_update` | `{ matchId, homePossession: 55, homeShots: 12, ... }` | Live statistics updates |
+| `new_message` | `{ id, senderId, senderName, content, timestamp }` | New chat message in the room |
+| `user_count_update` | `{ matchId, count: 247 }` | User joins/leaves the match room |
+| `user_typing` | `{ userId, matchId, isTyping: true }` | Someone starts/stops typing (auto-clears after 3s) |
+| `error` | `{ message: 'Rate limit exceeded' }` | Validation errors, rate limiting |
+
+---
+
+### Common Use Cases
+
+#### 1. **Watch a Live Match**
+```javascript
+socket.emit('join_match', { matchId: 'abc-123' });
+
+socket.on('match_status_update', (data) => {
+  updateScoreboard(data);
+});
+
+socket.on('new_match_event', (event) => {
+  if (event.type === 'GOAL') {
+    showGoalAnimation(event);
+  }
+});
+```
+
+#### 2. **Chat with Other Fans**
+```javascript
+// Load chat history first (REST API)
+fetch('/api/v1/matches/abc-123/messages')
+  .then(res => res.json())
+  .then(data => displayMessages(data.data));
+
+// Then listen for new messages
+socket.on('new_message', (msg) => {
+  appendMessage(msg);
+});
+
+// Send messages
+sendButton.onclick = () => {
+  socket.emit('send_message', {
+    matchId: 'abc-123',
+    content: messageInput.value
+  });
+};
+```
+
+#### 3. **Typing Indicators**
+```javascript
+let typingTimeout;
+
+messageInput.addEventListener('input', () => {
+  socket.emit('typing_start', { matchId: 'abc-123' });
+  
+  clearTimeout(typingTimeout);
+  typingTimeout = setTimeout(() => {
+    socket.emit('typing_stop', { matchId: 'abc-123' });
+  }, 1000);
+});
+```
+
+---
+
+### Error Handling
+
+```javascript
+socket.on('error', (error) => {
+  switch(error.message) {
+    case 'Rate limit exceeded. Please wait.':
+      showNotification('Slow down! Wait a second between messages.');
+      break;
+    case 'Message cannot be empty':
+      showNotification('Please enter a message.');
+      break;
+    case 'Message too long (max 500 characters)':
+      showNotification('Message is too long!');
+      break;
+    default:
+      console.error('Socket error:', error.message);
+  }
+});
+```
+
+---
+
+### Testing with Postman
+**Note**: Socket.io requests cannot be published to public Postman documentation, that is why I am using this README for sharing connection details. 
+
+1. Create a new **Socket.io Request** in Postman
+2. Set URL to `ws://localhost:3000` or `wss://gloryradio-server-staging.onrender.com/api/v1` (note that its hosted on a free tier platform which can make the server for every 15mins inactivity to sleep)
+3. In **Handshake** tab, add:
+   - Key: `token`
+   - Value: `<your-jwt-token>`
+4. Click **Connect**
+5. Use the **Events** tab to emit and listen for events
+
+
+
+---
+
+### Postman HTTP API Documentation
+For REST endpoints (auth, matches, messages): https://documenter.getpostman.com/view/16602053/2sBXVk9obV 
  
-
-
-
 
 
 ## Author
